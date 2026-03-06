@@ -1,5 +1,5 @@
 use crate::{
-    interface::{I2cInterface, ReadData, WriteData},
+    interface_async::{I2cInterface, ReadData, WriteData},
     types::{
         AxisEnableDisable, DataRate, Error, MagCompensation, PerformanceMode, PmuCmdStatus0,
         PowerMode, Sensor3DData, Sensor3DDataScaled,
@@ -7,7 +7,7 @@ use crate::{
     AverageNum, InterruptDrive, InterruptEnableDisable, InterruptLatch, InterruptMap,
     InterruptPolarity, MagConfig, Register,
 };
-use embedded_hal::delay::DelayNs;
+use embedded_hal_async::delay::DelayNs;
 
 /// Main struct representing the BMM350 device
 pub struct Bmm350<DI, D> {
@@ -22,7 +22,6 @@ pub struct Bmm350<DI, D> {
     /// Magnetometer compensation data
     mag_comp: MagCompensation,
 }
-
 
 impl<I2C, D> Bmm350<I2cInterface<I2C>, D>
 where
@@ -52,67 +51,67 @@ where
     D: DelayNs,
 {
     /// Initialize the device
-    pub fn init(&mut self) -> Result<(), Error<E>> {
-        self.delay.delay_us(3_000);
-        self.write_register_16bit(Register::CMD, Register::CMD_SOFT_RESET)?;
-        self.delay.delay_us(24_000);
+    pub async fn init(&mut self) -> Result<(), Error<E>> {
+        self.delay.delay_us(3_000).await;
+        self.write_register_16bit(Register::CMD, Register::CMD_SOFT_RESET).await?;
+        self.delay.delay_us(24_000).await;
 
-        let err = self.read_register(Register::ERR_REG)?;
+        let err = self.read_register(Register::ERR_REG).await?;
         if err != 0 {
             return Err(Error::InvalidConfig);
         }
 
-        let chip_id = self.read_register(Register::CHIPID)?;
+        let chip_id = self.read_register(Register::CHIPID).await?;
         if chip_id != Register::BMM350_CHIP_ID {
             return Err(Error::InvalidDevice);
         }
 
         // Perform OTP dump after boot
-        self.otp_dump_after_boot()?;
+        self.otp_dump_after_boot().await?;
 
         // Power off OTP
-        self.write_register(Register::OTP_CMD_REG, Register::OTP_CMD_PWR_OFF_OTP)?;
+        self.write_register(Register::OTP_CMD_REG, Register::OTP_CMD_PWR_OFF_OTP).await?;
 
-        self.magnetic_reset()?;
+        self.magnetic_reset().await?;
 
         Ok(())
     }
 
-    fn otp_dump_after_boot(&mut self) -> Result<(), Error<E>> {
+    async fn otp_dump_after_boot(&mut self) -> Result<(), Error<E>> {
         let mut otp_data = [0u16; 32];
 
         for i in 0..32 {
-            otp_data[i] = self.read_otp_word(i as u8)?;
+            otp_data[i] = self.read_otp_word(i as u8).await?;
         }
 
         self.var_id = ((otp_data[30] & 0x7f00) >> 9) as u8;
 
         // Update magnetometer offset and sensitivity data
-        self.update_mag_compensation(&otp_data)?;
+        self.update_mag_compensation(&otp_data).await?;
 
         Ok(())
     }
 
-    fn read_otp_word(&mut self, addr: u8) -> Result<u16, Error<E>> {
+    async fn read_otp_word(&mut self, addr: u8) -> Result<u16, Error<E>> {
         let otp_cmd = 0x20 | (addr & 0x1F); // OTP read command
-        self.write_register(Register::OTP_CMD_REG, otp_cmd)?;
+        self.write_register(Register::OTP_CMD_REG, otp_cmd).await?;
 
         // Wait for OTP read to complete
         for _ in 0..10 {
-            self.delay.delay_us(300);
-            let status = self.read_register(Register::OTP_STATUS_REG)?;
+            self.delay.delay_us(300).await;
+            let status = self.read_register(Register::OTP_STATUS_REG).await?;
             if status & 0x01 != 0 {
                 break;
             }
         }
 
-        let msb = self.read_register(Register::OTP_DATA_MSB_REG)?;
-        let lsb = self.read_register(Register::OTP_DATA_LSB_REG)?;
+        let msb = self.read_register(Register::OTP_DATA_MSB_REG).await?;
+        let lsb = self.read_register(Register::OTP_DATA_LSB_REG).await?;
 
         Ok(((msb as u16) << 8) | (lsb as u16) & 0xFFFF)
     }
 
-    fn update_mag_compensation(&mut self, otp_data: &[u16; 32]) -> Result<(), Error<E>> {
+    async fn update_mag_compensation(&mut self, otp_data: &[u16; 32]) -> Result<(), Error<E>> {
         // Implement the logic to update magnetometer compensation data
         // This is a simplified version and may need to be expanded based on the specific BMM350 requirements
         self.mag_comp = MagCompensation {
@@ -138,50 +137,50 @@ where
     /// Perform magnetic reset of the sensor.
     /// This is necessary after a field shock (400mT field applied to sensor).
     /// It performs both a bit reset and flux guide reset in suspend mode.
-    pub fn magnetic_reset(&mut self) -> Result<(), Error<E>> {
+    pub async fn magnetic_reset(&mut self) -> Result<(), Error<E>> {
         // Check if we're in normal mode
         let mut restore_normal = false;
-        let mut pmu_status = self.read_pmu_cmd_status_0()?;
+        let mut pmu_status = self.read_pmu_cmd_status_0().await?;
 
         // If we're in normal mode, we need to go to suspend first
         if pmu_status.power_mode_is_normal == 0x1 {
             restore_normal = true;
-            self.set_power_mode(PowerMode::Suspend)?;
+            self.set_power_mode(PowerMode::Suspend).await?;
         }
 
         // Set Bit Reset (BR) command
         // TODO set BitReset as register instead of PowerMode enum
-        self.write_register(Register::PMU_CMD, PowerMode::BitReset as u8)?;
-        self.delay.delay_us(14_000); // BR_DELAY
+        self.write_register(Register::PMU_CMD, PowerMode::BitReset as u8).await?;
+        self.delay.delay_us(14_000).await; // BR_DELAY
 
         // Verify BR status
-        pmu_status = self.read_pmu_cmd_status_0()?;
+        pmu_status = self.read_pmu_cmd_status_0().await?;
         if pmu_status.pmu_cmd_value != Register::PMU_CMD_STATUS_0_BR {
             return Err(Error::ResetUnfinished);
         }
 
         // Set Flux Guide Reset (FGR) command
         // TODO set FluxGuideReset as register instead of PowerMode enum
-        self.write_register(Register::PMU_CMD, PowerMode::FluxGuideReset as u8)?;
-        self.delay.delay_us(18_000); // FGR_DELAY
+        self.write_register(Register::PMU_CMD, PowerMode::FluxGuideReset as u8).await?;
+        self.delay.delay_us(18_000).await; // FGR_DELAY
 
         // Verify FGR status
-        let pmu_status = self.read_pmu_cmd_status_0()?;
+        let pmu_status = self.read_pmu_cmd_status_0().await?;
         if pmu_status.pmu_cmd_value != Register::PMU_CMD_STATUS_0_FGR {
             return Err(Error::ResetUnfinished);
         }
 
         // Restore normal mode if we were in it before
         if restore_normal {
-            self.set_power_mode(PowerMode::Normal)?;
+            self.set_power_mode(PowerMode::Normal).await?;
         }
 
         Ok(())
     }
 
     /// Read the PMU command status register 0
-    fn read_pmu_cmd_status_0(&mut self) -> Result<PmuCmdStatus0, Error<E>> {
-        let status = self.read_register(Register::PMU_CMD_STATUS_0)?;
+    async fn read_pmu_cmd_status_0(&mut self) -> Result<PmuCmdStatus0, Error<E>> {
+        let status = self.read_register(Register::PMU_CMD_STATUS_0).await?;
 
         Ok(PmuCmdStatus0 {
             pmu_cmd_busy: (status & 0x01),
@@ -198,12 +197,12 @@ where
     /// # Arguments
     ///
     /// * `config` - The magnetometer configuration
-    pub fn set_mag_config(&mut self, config: MagConfig) -> Result<(), Error<E>> {
+    pub async fn set_mag_config(&mut self, config: MagConfig) -> Result<(), Error<E>> {
         let reg_data = u16::from(config);
-        self.write_register_16bit(Register::PMU_CMD_AGGR_SET, reg_data)?;
+        self.write_register_16bit(Register::PMU_CMD_AGGR_SET, reg_data).await?;
 
         // Wait for magnetometer data to be ready
-        self.wait_for_data_ready()?;
+        self.wait_for_data_ready().await?;
 
         Ok(())
     }
@@ -213,25 +212,25 @@ where
     /// # Arguments
     ///
     /// * `mode` - The power mode to set
-    pub fn set_power_mode(&mut self, mode: PowerMode) -> Result<(), Error<E>> {
+    pub async fn set_power_mode(&mut self, mode: PowerMode) -> Result<(), Error<E>> {
         // TODO fix
 
-        let last_pwr = self.read_register(Register::REG_PMU_CMD)?;
+        let last_pwr = self.read_register(Register::REG_PMU_CMD).await?;
         if last_pwr > Register::PMU_CMD_NM_TC {
             return Err(Error::InvalidConfig);
         }
 
         if last_pwr == Register::PMU_CMD_NM || last_pwr == Register::PMU_CMD_UPD_OAE {
-            self.write_register(Register::REG_PMU_CMD, Register::PMU_CMD_SUS)?;
-            self.delay.delay_us(6_000);
+            self.write_register(Register::REG_PMU_CMD, Register::PMU_CMD_SUS).await?;
+            self.delay.delay_us(6_000).await;
         }
 
-        self.power_mode(mode)?;
+        self.power_mode(mode).await?;
 
         Ok(())
     }
 
-    fn power_mode(&mut self, mode: PowerMode) -> Result<(), Error<E>> {
+    async fn power_mode(&mut self, mode: PowerMode) -> Result<(), Error<E>> {
         let sus_to_forced_mode: [u32; 4] = [
             Register::SUS_TO_FORCEDMODE_NO_AVG_DELAY,
             Register::SUS_TO_FORCEDMODE_AVG_2_DELAY,
@@ -247,8 +246,8 @@ where
             Register::SUS_TO_FORCEDMODE_FAST_AVG_8_DELAY,
         ];
 
-        self.write_register(Register::REG_PMU_CMD, mode as u8)?;
-        let get_avg: u8 = self.read_register(Register::REG_PMU_CMD_AGGR_SET)?;
+        self.write_register(Register::REG_PMU_CMD, mode as u8).await?;
+        let get_avg: u8 = self.read_register(Register::REG_PMU_CMD_AGGR_SET).await?;
         let avg = (get_avg & Register::AVG_MASK) >> Register::AVG_POS;
         let mut delay_us = 0;
         match mode {
@@ -264,7 +263,7 @@ where
             _ => {}
         }
 
-        self.delay.delay_us(delay_us);
+        self.delay.delay_us(delay_us).await;
 
         Ok(())
     }
@@ -276,7 +275,7 @@ where
     /// * `x` - Enable or disable X axis
     /// * `y` - Enable or disable Y axis
     /// * `z` - Enable or disable Z axis
-    pub fn enable_axes(
+    pub async fn enable_axes(
         // TODO fix
         &mut self,
         x: AxisEnableDisable,
@@ -287,11 +286,11 @@ where
         reg_data = ((x as u8) & 0x01)
             | ((reg_data & 0x02) | ((y as u8) << 0x1) & 0x02)
             | ((reg_data & 0x04) | ((z as u8) << 0x2) & 0x04);
-        self.write_register(Register::PMU_CMD_AXIS_EN, reg_data)
+        self.write_register(Register::PMU_CMD_AXIS_EN, reg_data).await
     }
 
     /// Read the raw magnetometer data
-    pub fn read_mag_data(&mut self) -> Result<Sensor3DData, Error<E>> {
+    pub async fn read_mag_data(&mut self) -> Result<Sensor3DData, Error<E>> {
         // Prepare a buffer: 1 byte for start address + 9 bytes for data (X, Y, Z)
         const DATA_LEN: usize = 9;
         const BUFFER_LEN: usize = 1 + DATA_LEN;
@@ -299,7 +298,7 @@ where
         buffer[0] = Register::MAG_X_LSB; // Start address 0x31
 
         // read_data will return a slice referencing buffer[1..10] containing the 9 data bytes
-        let sensor_data_slice = self.read_data(&mut buffer[0..BUFFER_LEN])?;
+        let sensor_data_slice = self.read_data(&mut buffer[0..BUFFER_LEN]).await?;
 
         // Helper function for 24-bit signed reconstruction (still needed!)
         fn reconstruct_signed_24bit(xlsb: u8, lsb: u8, msb: u8) -> i32 {
@@ -333,32 +332,32 @@ where
 
     /// Perform a self-test
     // TODO fix this
-    fn perform_self_test(&mut self) -> Result<bool, Error<E>> {
+    async fn perform_self_test(&mut self) -> Result<bool, Error<E>> {
         // Save current configuration
-        let current_power_mode = self.read_register(Register::PMU_CMD)?;
-        let current_odr = self.read_register(Register::PMU_CMD_AGGR_SET)?;
+        let current_power_mode = self.read_register(Register::PMU_CMD).await?;
+        let current_odr = self.read_register(Register::PMU_CMD_AGGR_SET).await?;
 
         // Set device to normal mode and 100Hz ODR
-        self.set_power_mode(PowerMode::Normal)?;
+        self.set_power_mode(PowerMode::Normal).await?;
         self.set_mag_config(
             MagConfig::builder()
                 .odr(DataRate::ODR100Hz)
                 .performance(PerformanceMode::Regular)
                 .build(),
-        )?;
+        ).await?;
 
         // Perform self-test
         let self_test_passed = true;
 
         // Restore original configuration
-        self.write_register(Register::PMU_CMD, current_power_mode)?;
-        self.write_register(Register::PMU_CMD_AGGR_SET, current_odr)?;
+        self.write_register(Register::PMU_CMD, current_power_mode).await?;
+        self.write_register(Register::PMU_CMD_AGGR_SET, current_odr).await?;
 
         Ok(self_test_passed)
     }
 
     /// Set the output data rate and performance mode
-    pub fn set_odr_performance(
+    pub async fn set_odr_performance(
         &mut self,
         odr: DataRate,
         performance: AverageNum,
@@ -367,73 +366,73 @@ where
         let new_reg_data = (reg_data & Register::AVG_MASK)
             | ((performance as u8) << Register::AVG_POS) & Register::AVG_MASK;
 
-        self.write_register(Register::PMU_CMD_AGGR_SET, new_reg_data)?;
-        self.write_register(Register::PMU_CMD, Register::PMU_CMD_UPD_OAE)?;
+        self.write_register(Register::PMU_CMD_AGGR_SET, new_reg_data).await?;
+        self.write_register(Register::PMU_CMD, Register::PMU_CMD_UPD_OAE).await?;
 
-        self.delay.delay_us(1_000);
+        self.delay.delay_us(1_000).await;
         Ok(())
     }
 
     /// Enable or disable the data ready interrupt
-    pub fn enable_interrupt(&mut self, enable: InterruptEnableDisable) -> Result<(), Error<E>> {
-        self.read_register(Register::INT_CTRL)?;
+    pub async fn enable_interrupt(&mut self, enable: InterruptEnableDisable) -> Result<(), Error<E>> {
+        self.read_register(Register::INT_CTRL).await?;
         let reg_data: u8 = 0;
         let new_reg_data = (reg_data & (0x80)) | (((enable as u8) << 0x7) & 0x80);
-        self.write_register(Register::INT_CTRL, new_reg_data)
+        self.write_register(Register::INT_CTRL, new_reg_data).await
     }
 
     /// Configure interrupt settings
-    pub fn configure_interrupt(
+    pub async fn configure_interrupt(
         &mut self,
         latch: InterruptLatch,
         polarity: InterruptPolarity,
         drive: InterruptDrive,
         map: InterruptMap,
     ) -> Result<(), Error<E>> {
-        self.read_register(Register::INT_CTRL)?;
+        self.read_register(Register::INT_CTRL).await?;
         let mut reg_data: u8 = 0;
         reg_data = ((reg_data & (0x1)) | (latch as u8 & 0x1))
             | ((reg_data & (0x2)) | ((polarity as u8) << 0x1) & 0x2)
             | ((reg_data & (0x4)) | ((drive as u8) << 0x2) & 0x4)
             | ((reg_data & (0x8)) | ((map as u8) << 0x3) & 0x8);
-        self.write_register(Register::INT_CTRL, reg_data)
+        self.write_register(Register::INT_CTRL, reg_data).await
     }
 
     /// Read the interrupt status
-    pub fn get_interrupt_status(&mut self) -> Result<bool, Error<E>> {
-        let status = self.read_register(Register::STATUS)?;
+    pub async fn get_interrupt_status(&mut self) -> Result<bool, Error<E>> {
+        let status = self.read_register(Register::STATUS).await?;
         Ok((status & 0x04) != 0)
     }
 
     /// Set the I2C watchdog timer
-    pub fn set_i2c_watchdog(&mut self, enable: bool, long_timeout: bool) -> Result<(), Error<E>> {
+    pub async fn set_i2c_watchdog(&mut self, enable: bool, long_timeout: bool) -> Result<(), Error<E>> {
         let reg_data = (enable as u8) | ((long_timeout as u8) << 1);
-        self.write_register(Register::I2C_WDT_SET, reg_data)
+        self.write_register(Register::I2C_WDT_SET, reg_data).await
     }
 
-    fn write_register(&mut self, reg: u8, value: u8) -> Result<(), Error<E>> {
-        self.iface.write_data(&[reg, value])
+    async fn write_register(&mut self, reg: u8, value: u8) -> Result<(), Error<E>> {
+        self.iface.write_data(&[reg, value]).await
     }
 
-    fn write_register_16bit(&mut self, reg: u8, value: u16) -> Result<(), Error<E>> {
+    async fn write_register_16bit(&mut self, reg: u8, value: u16) -> Result<(), Error<E>> {
         let bytes = value.to_le_bytes();
-        self.iface.write_data(&[reg, bytes[0], bytes[1]])
+        self.iface.write_data(&[reg, bytes[0], bytes[1]]).await
     }
 
-    fn read_register(&mut self, reg: u8) -> Result<u8, Error<E>> {
-        self.iface.read_register(reg)
+    async fn read_register(&mut self, reg: u8) -> Result<u8, Error<E>> {
+        self.iface.read_register(reg).await
     }
 
-    fn read_data<'a>(&mut self, data: &'a mut [u8]) -> Result<&'a [u8], Error<E>> {
-        self.iface.read_data(data)
+    async fn read_data<'a>(&mut self, data: &'a mut [u8]) -> Result<&'a [u8], Error<E>> {
+        self.iface.read_data(data).await
     }
 
-    fn wait_for_data_ready(&mut self) -> Result<(), Error<E>> {
+    async fn wait_for_data_ready(&mut self) -> Result<(), Error<E>> {
         for _ in 0..100 {
-            if self.get_interrupt_status()? {
+            if self.get_interrupt_status().await? {
                 return Ok(());
             }
-            self.delay.delay_ms(1);
+            self.delay.delay_ms(1).await;
         }
         Err(Error::Timeout)
     }

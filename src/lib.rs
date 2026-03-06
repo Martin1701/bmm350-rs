@@ -6,6 +6,11 @@
 /// It supports both I2C interfaces and allows for configuration of magnetometer settings.
 pub mod device;
 mod interface;
+
+#[cfg(feature = "async")]
+pub mod device_async;
+#[cfg(feature = "async")]
+mod interface_async;
 mod registers;
 pub use registers::Register;
 mod types;
@@ -17,20 +22,6 @@ pub use types::{
 };
 mod sensor_data;
 pub use sensor_data::*;
-
-/// Main struct representing the BMM350 device
-pub struct Bmm350<DI, D> {
-    /// Communication interface (I2C or SPI)
-    iface: DI,
-    /// Delay provider
-    delay: D,
-    /// Current magnetometer range
-    mag_range: f32,
-    /// Variant ID
-    var_id: u8,
-    /// Magnetometer compensation data
-    mag_comp: MagCompensation,
-}
 
 /// Configuration for the magnetometer
 #[derive(Debug, Clone, Copy)]
