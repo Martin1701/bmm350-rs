@@ -20,11 +20,13 @@ impl Register {
     /// Expected chip ID for BMM350
     pub const BMM350_CHIP_ID: u8 = 0x33;
     /// Soft reset command value
-    pub const CMD_SOFT_RESET: u16 = 0xB6;
+    pub const CMD_SOFT_RESET: u8 = 0xB6;
 
     pub const TMR_SELFTEST_USER: u8 = 0x60;
 
     pub const INT_CTRL: u8 = 0x2E;
+
+    pub const INT_STATUS: u8 = 0x30;
 
     pub const I2C_WDT_SET: u8 = 0x0A;
 
@@ -59,8 +61,8 @@ impl Register {
     pub const PMU_CMD_SUS: u8 = 0x00;
 
     pub const REG_PMU_CMD_AGGR_SET: u8 = 0x04;
-    
-    pub const SUSPEND_TO_NORMAL_DELAY: u32 = 38_000; 
+
+    pub const SUSPEND_TO_NORMAL_DELAY: u32 = 38_000;
 
     pub const SUS_TO_FORCEDMODE_NO_AVG_DELAY: u32 = 15000;
     pub const SUS_TO_FORCEDMODE_AVG_2_DELAY: u32 = 17000;
@@ -72,3 +74,54 @@ impl Register {
     pub const SUS_TO_FORCEDMODE_FAST_AVG_4_DELAY: u32 = 9000;
     pub const SUS_TO_FORCEDMODE_FAST_AVG_8_DELAY: u32 = 16000;
 }
+
+// OTP indices
+pub const BMM350_TEMP_OFF_SENS: usize = 0x0D;
+pub const BMM350_MAG_OFFSET_X: usize = 0x0E;
+pub const BMM350_MAG_OFFSET_Y: usize = 0x0F;
+pub const BMM350_MAG_OFFSET_Z: usize = 0x10;
+pub const BMM350_MAG_SENS_X: usize = 0x10;
+pub const BMM350_MAG_SENS_Y: usize = 0x11;
+pub const BMM350_MAG_SENS_Z: usize = 0x11;
+pub const BMM350_MAG_TCO_X: usize = 0x12;
+pub const BMM350_MAG_TCO_Y: usize = 0x13;
+pub const BMM350_MAG_TCO_Z: usize = 0x14;
+pub const BMM350_MAG_TCS_X: usize = 0x12;
+pub const BMM350_MAG_TCS_Y: usize = 0x13;
+pub const BMM350_MAG_TCS_Z: usize = 0x14;
+pub const BMM350_MAG_DUT_T_0: usize = 0x18;
+pub const BMM350_CROSS_X_Y: usize = 0x15;
+pub const BMM350_CROSS_Y_X: usize = 0x15;
+pub const BMM350_CROSS_Z_X: usize = 0x16;
+pub const BMM350_CROSS_Z_Y: usize = 0x16;
+
+// Post-solder correction (BMM350_POST_SOLDER_CORR enabled by default)
+pub const BMM350_SENS_CORR_Y: f32 = 0.01;
+pub const BMM350_TCS_CORR_Z: f32 = 0.0001;
+
+pub const BMM350_OTP_CMD_DIR_READ: u8 = 0x20;
+pub const BMM350_OTP_WORD_ADDR_MSK: u8 = 0x1F;
+pub const BMM350_OTP_STATUS_ERROR_MSK: u8 = 0xE0;
+pub const BMM350_OTP_STATUS_CMD_DONE: u8 = 0x01;
+
+pub const BMM350_UPD_OAE_DELAY: u32 = 1_000;
+
+// Compensation scale factors
+pub const BMM350_LSB_TO_UT_XY: f32 = {
+    const POWER: f32 = 1_000_000.0 / 1_048_576.0;
+    const ADC_GAIN: f32 = 1.0 / 1.5;
+    const LUT_GAIN: f32 = 0.714607238769531;
+    POWER / (14.55 * 19.46 * ADC_GAIN * LUT_GAIN)
+};
+pub const BMM350_LSB_TO_UT_Z: f32 = {
+    const POWER: f32 = 1_000_000.0 / 1_048_576.0;
+    const ADC_GAIN: f32 = 1.0 / 1.5;
+    const LUT_GAIN: f32 = 0.714607238769531;
+    POWER / (9.0 * 31.0 * ADC_GAIN * LUT_GAIN)
+};
+pub const BMM350_LSB_TO_DEGC: f32 = {
+    const ADC_GAIN: f32 = 1.0 / 1.5;
+    const LUT_GAIN: f32 = 0.714607238769531;
+    1.0 / (0.00204 * ADC_GAIN * LUT_GAIN * 1_048_576.0)
+};
+pub const BMM350_TEMP_OFFSET: f32 = 25.49;

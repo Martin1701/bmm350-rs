@@ -4,13 +4,16 @@
 ///
 /// This module provides a high-level interface for interacting with the Bosch BMM350 magnetometer.
 /// It supports both I2C interfaces and allows for configuration of magnetometer settings.
+
+#[cfg(not(feature = "async"))]
 pub mod device;
-mod interface;
+#[cfg(not(feature = "async"))]
+pub mod interface;
 
 #[cfg(feature = "async")]
 pub mod device_async;
 #[cfg(feature = "async")]
-mod interface_async;
+pub mod interface_async;
 mod registers;
 pub use registers::Register;
 mod types;
@@ -22,89 +25,43 @@ pub use types::{
 };
 mod sensor_data;
 pub use sensor_data::*;
-
-/// Configuration for the magnetometer
 #[derive(Debug, Clone, Copy)]
 pub struct MagConfig {
-    /// Output data rate
     pub odr: DataRate,
-    /// Performance mode (averaging)
     pub performance: PerformanceMode,
-    /// Bandwidth
-    pub bw: Bandwidth,
-    /// Power mode
-    pub mode: PowerMode,
 }
 
 impl MagConfig {
-    /// Create a new MagConfigBuilder
     pub fn builder() -> MagConfigBuilder {
         MagConfigBuilder::default()
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct MagConfigBuilder {
     odr: Option<DataRate>,
     performance: Option<PerformanceMode>,
-    bw: Option<Bandwidth>,
-    mode: Option<PowerMode>,
-}
-
-/// Builder for MagConfig
-impl Default for MagConfigBuilder {
-    fn default() -> Self {
-        Self {
-            odr: None,
-            performance: None,
-            bw: None,
-            mode: None,
-        }
-    }
 }
 
 impl MagConfigBuilder {
-    /// Set the output data rate
     pub fn odr(mut self, odr: DataRate) -> Self {
         self.odr = Some(odr);
         self
     }
-
-    /// Set the performance mode
     pub fn performance(mut self, performance: PerformanceMode) -> Self {
         self.performance = Some(performance);
         self
     }
-
-    /// Set the bandwidth
-    pub fn bw(mut self, bw: Bandwidth) -> Self {
-        self.bw = Some(bw);
-        self
-    }
-
-    /// Set the power mode
-    pub fn mode(mut self, mode: PowerMode) -> Self {
-        self.mode = Some(mode);
-        self
-    }
-
-    /// Build the MagConfig
     pub fn build(self) -> MagConfig {
         MagConfig {
             odr: self.odr.unwrap_or(DataRate::ODR100Hz),
             performance: self.performance.unwrap_or(PerformanceMode::Regular),
-            bw: self.bw.unwrap_or(Bandwidth::Normal),
-            mode: self.mode.unwrap_or(PowerMode::Normal),
         }
     }
 }
 
-impl From<MagConfig> for u16 {
-    /// Convert MagConfig to a 16-bit register value
+impl From<MagConfig> for u8 {
     fn from(config: MagConfig) -> Self {
-        (config.odr as u16 & 0x0F)
-            | ((config.performance as u16 & 0x03) << 4)
-            | ((config.bw as u16 & 0x01) << 7)
-            | ((config.mode as u16 & 0x07) << 12)
+        (config.odr as u8 & 0x0F) | ((config.performance as u8 & 0x03) << 4)
     }
 }

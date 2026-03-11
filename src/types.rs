@@ -11,6 +11,10 @@ pub enum Error<E> {
     InvalidConfig,
     /// Timeout error
     Timeout,
+    /// OTP Error
+    OtpError,
+    /// OTP timeout
+    OtpTimeout,
 
     ResetUnfinished,
 }
@@ -130,18 +134,86 @@ pub enum CtrlUser {
     Enable = 0x01,
 }
 
+#[derive(Debug, Clone)]
+pub struct DutOffsetCoef {
+    pub offset_x: f32, // raw signed 12-bit, no divisor
+    pub offset_y: f32,
+    pub offset_z: f32,
+    pub t_offs: f32, // signed 8-bit / 5.0
+}
+
+#[derive(Debug, Clone)]
+pub struct DutSensitCoef {
+    pub sens_x: f32, // signed 8-bit / 256.0
+    pub sens_y: f32,
+    pub sens_z: f32,
+    pub t_sens: f32, // signed 8-bit / 512.0  ← different divisor!
+}
+
+#[derive(Debug, Clone)]
+pub struct DutTco {
+    pub tco_x: f32, // signed 8-bit / 32.0
+    pub tco_y: f32,
+    pub tco_z: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct DutTcs {
+    pub tcs_x: f32, // signed 8-bit / 16384.0
+    pub tcs_y: f32,
+    pub tcs_z: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct CrossAxis {
+    pub cross_x_y: f32, // signed 8-bit / 800.0
+    pub cross_y_x: f32,
+    pub cross_z_x: f32,
+    pub cross_z_y: f32,
+}
+
+#[derive(Debug, Clone)]
 pub struct MagCompensation {
-    pub offset_x: i16,
-    pub offset_y: i16,
-    pub offset_z: i16,
+    pub dut_offset_coef: DutOffsetCoef,
+    pub dut_sensit_coef: DutSensitCoef,
+    pub dut_tco: DutTco,
+    pub dut_tcs: DutTcs,
+    pub dut_t0: f32, // reference temperature in °C
+    pub cross_axis: CrossAxis,
 }
 
 impl Default for MagCompensation {
     fn default() -> Self {
         Self {
-            offset_x: 0,
-            offset_y: 0,
-            offset_z: 0,
+            dut_offset_coef: DutOffsetCoef {
+                offset_x: 0.0,
+                offset_y: 0.0,
+                offset_z: 0.0,
+                t_offs: 0.0,
+            },
+            dut_sensit_coef: DutSensitCoef {
+                sens_x: 0.0,
+                sens_y: 0.0,
+                sens_z: 0.0,
+                t_sens: 0.0,
+            },
+            dut_tco: DutTco {
+                tco_x: 0.0,
+                tco_y: 0.0,
+                tco_z: 0.0,
+            },
+            dut_tcs: DutTcs {
+                tcs_x: 0.0,
+                tcs_y: 0.0,
+                tcs_z: 0.0,
+            },
+            dut_t0: 0.0,
+            cross_axis: CrossAxis {
+                cross_x_y: 0.0,
+                cross_y_x: 0.0,
+                cross_z_x: 0.0,
+                cross_z_y: 0.0,
+            },
         }
     }
 }
@@ -156,7 +228,7 @@ pub struct Sensor3DData {
     /// Z-axis value
     pub z: i32,
     /// Temperature value
-    pub temperature: i32,
+    pub t: i32,
 }
 
 /// Scaled 3D sensor data
@@ -169,7 +241,7 @@ pub struct Sensor3DDataScaled {
     /// Z-axis scaled value
     pub z: f32,
     /// Temperature scaled value
-    pub temperature: f32,
+    pub t: f32,
 }
 
 /// Scaled 3D sensor data

@@ -1,11 +1,12 @@
 use crate::{
     interface_async::{I2cInterface, ReadData, WriteData},
+    registers::*,
     types::{
-        AxisEnableDisable, DataRate, Error, MagCompensation, PerformanceMode, PmuCmdStatus0,
-        PowerMode, Sensor3DData, Sensor3DDataScaled,
+        AxisEnableDisable, CrossAxis, DataRate, DutOffsetCoef, DutSensitCoef, DutTco, DutTcs,
+        Error, MagCompensation, PerformanceMode, PmuCmdStatus0, PowerMode, Sensor3DData,
     },
     AverageNum, InterruptDrive, InterruptEnableDisable, InterruptLatch, InterruptMap,
-    InterruptPolarity, MagConfig, Register,
+    InterruptPolarity, MagConfig, Register, Sensor3DDataScaled,
 };
 use embedded_hal_async::delay::DelayNs;
 
@@ -15,8 +16,6 @@ pub struct Bmm350<DI, D> {
     iface: DI,
     /// Delay provider
     delay: D,
-    /// Current magnetometer range
-    mag_range: f32,
     /// Variant ID
     var_id: u8,
     /// Magnetometer compensation data
@@ -38,7 +37,6 @@ where
         Bmm350 {
             iface: I2cInterface { i2c, address },
             delay,
-            mag_range: 1000.0,
             var_id: 0,
             mag_comp: MagCompensation::default(), // Default range in uT
         }
@@ -53,7 +51,7 @@ where
     /// Initialize the device
     pub async fn init(&mut self) -> Result<(), Error<E>> {
         self.delay.delay_us(3_000).await;
-        self.write_register_16bit(Register::CMD, Register::CMD_SOFT_RESET)
+        self.write_register(Register::CMD, Register::CMD_SOFT_RESET)
             .await?;
         self.delay.delay_us(24_000).await;
 
@@ -89,51 +87,98 @@ where
         self.var_id = ((otp_data[30] & 0x7f00) >> 9) as u8;
 
         // Update magnetometer offset and sensitivity data
-        self.update_mag_compensation(&otp_data).await?;
+        self.update_mag_compensation(&otp_data);
 
         Ok(())
     }
 
     async fn read_otp_word(&mut self, addr: u8) -> Result<u16, Error<E>> {
-        let otp_cmd = 0x20 | (addr & 0x1F); // OTP read command
+        let otp_cmd = BMM350_OTP_CMD_DIR_READ | (addr & BMM350_OTP_WORD_ADDR_MSK);
         self.write_register(Register::OTP_CMD_REG, otp_cmd).await?;
 
-        // Wait for OTP read to complete
+        let mut done = false;
         for _ in 0..10 {
             self.delay.delay_us(300).await;
             let status = self.read_register(Register::OTP_STATUS_REG).await?;
-            if status & 0x01 != 0 {
+            if status & BMM350_OTP_STATUS_ERROR_MSK != 0 {
+                return Err(Error::OtpError);
+            }
+            if status & BMM350_OTP_STATUS_CMD_DONE != 0 {
+                done = true;
                 break;
             }
+        }
+        if !done {
+            return Err(Error::OtpTimeout);
         }
 
         let msb = self.read_register(Register::OTP_DATA_MSB_REG).await?;
         let lsb = self.read_register(Register::OTP_DATA_LSB_REG).await?;
-
-        Ok(((msb as u16) << 8) | (lsb as u16) & 0xFFFF)
+        Ok(((msb as u16) << 8) | (lsb as u16))
     }
 
-    async fn update_mag_compensation(&mut self, otp_data: &[u16; 32]) -> Result<(), Error<E>> {
-        // Implement the logic to update magnetometer compensation data
-        // This is a simplified version and may need to be expanded based on the specific BMM350 requirements
+    fn update_mag_compensation(&mut self, otp: &[u16; 32]) {
+        let off_x = fix_sign_12(otp[BMM350_MAG_OFFSET_X] & 0x0FFF);
+        let off_y = fix_sign_12(
+            ((otp[BMM350_MAG_OFFSET_X] & 0xF000) >> 4) | (otp[BMM350_MAG_OFFSET_Y] & 0x00FF),
+        );
+        let off_z =
+            fix_sign_12((otp[BMM350_MAG_OFFSET_Y] & 0x0F00) | (otp[BMM350_MAG_OFFSET_Z] & 0x00FF));
+        let t_off = (otp[BMM350_TEMP_OFF_SENS] & 0x00FF) as u8 as i8;
+        let sens_x = ((otp[BMM350_MAG_SENS_X] & 0xFF00) >> 8) as u8 as i8;
+        let sens_y = (otp[BMM350_MAG_SENS_Y] & 0x00FF) as u8 as i8;
+        let sens_z = ((otp[BMM350_MAG_SENS_Z] & 0xFF00) >> 8) as u8 as i8;
+        let t_sens = ((otp[BMM350_TEMP_OFF_SENS] & 0xFF00) >> 8) as u8 as i8;
+        let tco_x = (otp[BMM350_MAG_TCO_X] & 0x00FF) as u8 as i8;
+        let tco_y = (otp[BMM350_MAG_TCO_Y] & 0x00FF) as u8 as i8;
+        let tco_z = (otp[BMM350_MAG_TCO_Z] & 0x00FF) as u8 as i8;
+        let tcs_x = ((otp[BMM350_MAG_TCS_X] & 0xFF00) >> 8) as u8 as i8;
+        let tcs_y = ((otp[BMM350_MAG_TCS_Y] & 0xFF00) >> 8) as u8 as i8;
+        let tcs_z = ((otp[BMM350_MAG_TCS_Z] & 0xFF00) >> 8) as u8 as i8;
+        let dut_t0 = otp[BMM350_MAG_DUT_T_0] as i16 as f32 / 512.0 + 23.0;
+        let cr_x_y = (otp[BMM350_CROSS_X_Y] & 0x00FF) as u8 as i8;
+        let cr_y_x = ((otp[BMM350_CROSS_Y_X] & 0xFF00) >> 8) as u8 as i8;
+        let cr_z_x = (otp[BMM350_CROSS_Z_X] & 0x00FF) as u8 as i8;
+        let cr_z_y = ((otp[BMM350_CROSS_Z_Y] & 0xFF00) >> 8) as u8 as i8;
+
         self.mag_comp = MagCompensation {
-            offset_x: self.extract_signed_12bit(otp_data[0x0E] & 0x0FFF),
-            offset_y: self
-                .extract_signed_12bit(((otp_data[0x0E] & 0xF000) >> 4) + (otp_data[0x0F] & 0x00FF)),
-            offset_z: self
-                .extract_signed_12bit((otp_data[0x0F] & 0x0F00) + (otp_data[0x10] & 0x00FF)),
-            // Add more fields as necessary
+            dut_offset_coef: DutOffsetCoef {
+                offset_x: off_x as f32,
+                offset_y: off_y as f32,
+                offset_z: off_z as f32,
+                t_offs: t_off as f32 / 5.0,
+            },
+            dut_sensit_coef: DutSensitCoef {
+                sens_x: sens_x as f32 / 256.0,
+                sens_y: sens_y as f32 / 256.0,
+                sens_z: sens_z as f32 / 256.0,
+                t_sens: t_sens as f32 / 512.0,
+            },
+            dut_tco: DutTco {
+                tco_x: tco_x as f32 / 32.0,
+                tco_y: tco_y as f32 / 32.0,
+                tco_z: tco_z as f32 / 32.0,
+            },
+            dut_tcs: DutTcs {
+                tcs_x: tcs_x as f32 / 16384.0,
+                tcs_y: tcs_y as f32 / 16384.0,
+                tcs_z: tcs_z as f32 / 16384.0,
+            },
+            dut_t0,
+            cross_axis: CrossAxis {
+                cross_x_y: cr_x_y as f32 / 800.0,
+                cross_y_x: cr_y_x as f32 / 800.0,
+                cross_z_x: cr_z_x as f32 / 800.0,
+                cross_z_y: cr_z_y as f32 / 800.0,
+            },
         };
 
-        Ok(())
+        self.mag_comp.dut_sensit_coef.sens_y += BMM350_SENS_CORR_Y;
+        self.mag_comp.dut_tcs.tcs_z += BMM350_TCS_CORR_Z;
     }
 
-    fn extract_signed_12bit(&self, value: u16) -> i16 {
-        if value & 0x0800 != 0 {
-            (value | 0xF000) as i16
-        } else {
-            value as i16
-        }
+    pub fn get_comp(&self) -> &MagCompensation {
+        return &self.mag_comp;
     }
 
     /// Perform magnetic reset of the sensor.
@@ -202,13 +247,11 @@ where
     ///
     /// * `config` - The magnetometer configuration
     pub async fn set_mag_config(&mut self, config: MagConfig) -> Result<(), Error<E>> {
-        let reg_data = u16::from(config);
-        self.write_register_16bit(Register::PMU_CMD_AGGR_SET, reg_data)
+        self.write_register(Register::PMU_CMD_AGGR_SET, u8::from(config))
             .await?;
-
-        // Wait for magnetometer data to be ready
-        self.wait_for_data_ready().await?;
-
+        self.write_register(Register::PMU_CMD, Register::PMU_CMD_UPD_OAE)
+            .await?;
+        self.delay.delay_us(BMM350_UPD_OAE_DELAY).await;
         Ok(())
     }
 
@@ -293,6 +336,10 @@ where
             .await
     }
 
+    pub async fn read_mag_data_and_compensate(&mut self) -> Result<Sensor3DDataScaled, Error<E>> {
+        Ok(self.read_mag_data().await?.to_ut(&self.get_comp()))
+    }
+
     /// Read the raw magnetometer data
     pub async fn read_mag_data(&mut self) -> Result<Sensor3DData, Error<E>> {
         // Prepare a buffer: 1 byte for start address + 9 bytes for data (X, Y, Z) + 3 bytes for temperature
@@ -331,7 +378,7 @@ where
                 sensor_data_slice[7],
                 sensor_data_slice[8],
             ),
-            temperature: reconstruct_signed_24bit(
+            t: reconstruct_signed_24bit(
                 sensor_data_slice[9],
                 sensor_data_slice[10],
                 sensor_data_slice[11],
@@ -341,7 +388,7 @@ where
 
     /// Perform a self-test
     // TODO fix this
-    async fn perform_self_test(&mut self) -> Result<bool, Error<E>> {
+    pub async fn perform_self_test(&mut self) -> Result<bool, Error<E>> {
         // Save current configuration
         let current_power_mode = self.read_register(Register::PMU_CMD).await?;
         let current_odr = self.read_register(Register::PMU_CMD_AGGR_SET).await?;
@@ -388,16 +435,14 @@ where
             _ => {}
         }
 
-        let reg_data = (odr as u8) & 0xf;
-        let new_reg_data = (reg_data & Register::AVG_MASK)
-            | ((performance as u8) << Register::AVG_POS) & Register::AVG_MASK;
+        let new_reg_data = (odr as u8 & 0x0F) | ((performance as u8 & 0x03) << 4);
 
         self.write_register(Register::PMU_CMD_AGGR_SET, new_reg_data)
             .await?;
         self.write_register(Register::PMU_CMD, Register::PMU_CMD_UPD_OAE)
             .await?;
 
-        self.delay.delay_us(1_000).await;
+        self.delay.delay_us(BMM350_UPD_OAE_DELAY).await;
         Ok(())
     }
 
@@ -429,7 +474,7 @@ where
 
     /// Read the interrupt status
     pub async fn get_interrupt_status(&mut self) -> Result<bool, Error<E>> {
-        let status = self.read_register(Register::STATUS).await?;
+        let status = self.read_register(Register::INT_STATUS).await?;
         Ok((status & 0x04) != 0)
     }
 
@@ -447,11 +492,6 @@ where
         self.iface.write_data(&[reg, value]).await
     }
 
-    async fn write_register_16bit(&mut self, reg: u8, value: u16) -> Result<(), Error<E>> {
-        let bytes = value.to_le_bytes();
-        self.iface.write_data(&[reg, bytes[0], bytes[1]]).await
-    }
-
     async fn read_register(&mut self, reg: u8) -> Result<u8, Error<E>> {
         self.iface.read_register(reg).await
     }
@@ -459,14 +499,14 @@ where
     async fn read_data<'a>(&mut self, data: &'a mut [u8]) -> Result<&'a [u8], Error<E>> {
         self.iface.read_data(data).await
     }
+}
 
-    async fn wait_for_data_ready(&mut self) -> Result<(), Error<E>> {
-        for _ in 0..100 {
-            if self.get_interrupt_status().await? {
-                return Ok(());
-            }
-            self.delay.delay_ms(1).await;
-        }
-        Err(Error::Timeout)
+#[inline]
+fn fix_sign_12(raw: u16) -> i16 {
+    let v = raw & 0x0FFF;
+    if v & 0x0800 != 0 {
+        (v | 0xF000) as i16
+    } else {
+        v as i16
     }
 }
