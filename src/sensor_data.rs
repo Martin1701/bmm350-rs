@@ -15,6 +15,7 @@ impl Sensor3DData {
             x: Self::lsb_to_scaled(self.x, scale, half_scale),
             y: Self::lsb_to_scaled(self.y, scale, half_scale),
             z: Self::lsb_to_scaled(self.z, scale, half_scale),
+            temperature: Self::lsb_to_scaled(self.temperature, scale, half_scale), //TODO fix
         }
     }
 

@@ -53,7 +53,8 @@ where
     /// Initialize the device
     pub async fn init(&mut self) -> Result<(), Error<E>> {
         self.delay.delay_us(3_000).await;
-        self.write_register_16bit(Register::CMD, Register::CMD_SOFT_RESET).await?;
+        self.write_register_16bit(Register::CMD, Register::CMD_SOFT_RESET)
+            .await?;
         self.delay.delay_us(24_000).await;
 
         let err = self.read_register(Register::ERR_REG).await?;
@@ -70,7 +71,8 @@ where
         self.otp_dump_after_boot().await?;
 
         // Power off OTP
-        self.write_register(Register::OTP_CMD_REG, Register::OTP_CMD_PWR_OFF_OTP).await?;
+        self.write_register(Register::OTP_CMD_REG, Register::OTP_CMD_PWR_OFF_OTP)
+            .await?;
 
         self.magnetic_reset().await?;
 
@@ -150,7 +152,8 @@ where
 
         // Set Bit Reset (BR) command
         // TODO set BitReset as register instead of PowerMode enum
-        self.write_register(Register::PMU_CMD, PowerMode::BitReset as u8).await?;
+        self.write_register(Register::PMU_CMD, PowerMode::BitReset as u8)
+            .await?;
         self.delay.delay_us(14_000).await; // BR_DELAY
 
         // Verify BR status
@@ -161,7 +164,8 @@ where
 
         // Set Flux Guide Reset (FGR) command
         // TODO set FluxGuideReset as register instead of PowerMode enum
-        self.write_register(Register::PMU_CMD, PowerMode::FluxGuideReset as u8).await?;
+        self.write_register(Register::PMU_CMD, PowerMode::FluxGuideReset as u8)
+            .await?;
         self.delay.delay_us(18_000).await; // FGR_DELAY
 
         // Verify FGR status
@@ -199,7 +203,8 @@ where
     /// * `config` - The magnetometer configuration
     pub async fn set_mag_config(&mut self, config: MagConfig) -> Result<(), Error<E>> {
         let reg_data = u16::from(config);
-        self.write_register_16bit(Register::PMU_CMD_AGGR_SET, reg_data).await?;
+        self.write_register_16bit(Register::PMU_CMD_AGGR_SET, reg_data)
+            .await?;
 
         // Wait for magnetometer data to be ready
         self.wait_for_data_ready().await?;
@@ -216,12 +221,13 @@ where
         // TODO fix
 
         let last_pwr = self.read_register(Register::REG_PMU_CMD).await?;
-        if last_pwr > Register::PMU_CMD_NM_TC {
+        if last_pwr > PowerMode::BrFast as u8 {
             return Err(Error::InvalidConfig);
         }
 
         if last_pwr == Register::PMU_CMD_NM || last_pwr == Register::PMU_CMD_UPD_OAE {
-            self.write_register(Register::REG_PMU_CMD, Register::PMU_CMD_SUS).await?;
+            self.write_register(Register::REG_PMU_CMD, Register::PMU_CMD_SUS)
+                .await?;
             self.delay.delay_us(6_000).await;
         }
 
@@ -246,7 +252,8 @@ where
             Register::SUS_TO_FORCEDMODE_FAST_AVG_8_DELAY,
         ];
 
-        self.write_register(Register::REG_PMU_CMD, mode as u8).await?;
+        self.write_register(Register::REG_PMU_CMD, mode as u8)
+            .await?;
         let get_avg: u8 = self.read_register(Register::REG_PMU_CMD_AGGR_SET).await?;
         let avg = (get_avg & Register::AVG_MASK) >> Register::AVG_POS;
         let mut delay_us = 0;
@@ -276,28 +283,25 @@ where
     /// * `y` - Enable or disable Y axis
     /// * `z` - Enable or disable Z axis
     pub async fn enable_axes(
-        // TODO fix
         &mut self,
         x: AxisEnableDisable,
         y: AxisEnableDisable,
         z: AxisEnableDisable,
     ) -> Result<(), Error<E>> {
-        let mut reg_data: u8 = 0;
-        reg_data = ((x as u8) & 0x01)
-            | ((reg_data & 0x02) | ((y as u8) << 0x1) & 0x02)
-            | ((reg_data & 0x04) | ((z as u8) << 0x2) & 0x04);
-        self.write_register(Register::PMU_CMD_AXIS_EN, reg_data).await
+        let reg_data: u8 = (x as u8 & 0x01) | ((y as u8 & 0x01) << 1) | ((z as u8 & 0x01) << 2);
+        self.write_register(Register::PMU_CMD_AXIS_EN, reg_data)
+            .await
     }
 
     /// Read the raw magnetometer data
     pub async fn read_mag_data(&mut self) -> Result<Sensor3DData, Error<E>> {
-        // Prepare a buffer: 1 byte for start address + 9 bytes for data (X, Y, Z)
-        const DATA_LEN: usize = 9;
+        // Prepare a buffer: 1 byte for start address + 9 bytes for data (X, Y, Z) + 3 bytes for temperature
+        const DATA_LEN: usize = 12;
         const BUFFER_LEN: usize = 1 + DATA_LEN;
-        let mut buffer = [0u8; BUFFER_LEN]; // Size 10
+        let mut buffer = [0u8; BUFFER_LEN]; // Size 13
         buffer[0] = Register::MAG_X_LSB; // Start address 0x31
 
-        // read_data will return a slice referencing buffer[1..10] containing the 9 data bytes
+        // read_data will return a slice referencing buffer[1..10] containing the 12 data bytes
         let sensor_data_slice = self.read_data(&mut buffer[0..BUFFER_LEN]).await?;
 
         // Helper function for 24-bit signed reconstruction (still needed!)
@@ -327,6 +331,11 @@ where
                 sensor_data_slice[7],
                 sensor_data_slice[8],
             ),
+            temperature: reconstruct_signed_24bit(
+                sensor_data_slice[9],
+                sensor_data_slice[10],
+                sensor_data_slice[11],
+            ),
         })
     }
 
@@ -344,14 +353,17 @@ where
                 .odr(DataRate::ODR100Hz)
                 .performance(PerformanceMode::Regular)
                 .build(),
-        ).await?;
+        )
+        .await?;
 
         // Perform self-test
         let self_test_passed = true;
 
         // Restore original configuration
-        self.write_register(Register::PMU_CMD, current_power_mode).await?;
-        self.write_register(Register::PMU_CMD_AGGR_SET, current_odr).await?;
+        self.write_register(Register::PMU_CMD, current_power_mode)
+            .await?;
+        self.write_register(Register::PMU_CMD_AGGR_SET, current_odr)
+            .await?;
 
         Ok(self_test_passed)
     }
@@ -362,26 +374,43 @@ where
         odr: DataRate,
         performance: AverageNum,
     ) -> Result<(), Error<E>> {
+        // Validate ODR/averaging combination
+        match odr {
+            DataRate::ODR400Hz if performance as u8 >= AverageNum::Avg2 as u8 => {
+                return Err(Error::InvalidConfig)
+            }
+            DataRate::ODR200Hz if performance as u8 >= AverageNum::Avg4 as u8 => {
+                return Err(Error::InvalidConfig)
+            }
+            DataRate::ODR100Hz if performance as u8 >= AverageNum::Avg8 as u8 => {
+                return Err(Error::InvalidConfig)
+            }
+            _ => {}
+        }
+
         let reg_data = (odr as u8) & 0xf;
         let new_reg_data = (reg_data & Register::AVG_MASK)
             | ((performance as u8) << Register::AVG_POS) & Register::AVG_MASK;
 
-        self.write_register(Register::PMU_CMD_AGGR_SET, new_reg_data).await?;
-        self.write_register(Register::PMU_CMD, Register::PMU_CMD_UPD_OAE).await?;
+        self.write_register(Register::PMU_CMD_AGGR_SET, new_reg_data)
+            .await?;
+        self.write_register(Register::PMU_CMD, Register::PMU_CMD_UPD_OAE)
+            .await?;
 
         self.delay.delay_us(1_000).await;
         Ok(())
     }
 
     /// Enable or disable the data ready interrupt
-    pub async fn enable_interrupt(&mut self, enable: InterruptEnableDisable) -> Result<(), Error<E>> {
-        self.read_register(Register::INT_CTRL).await?;
-        let reg_data: u8 = 0;
-        let new_reg_data = (reg_data & (0x80)) | (((enable as u8) << 0x7) & 0x80);
+    pub async fn enable_interrupt(
+        &mut self,
+        enable: InterruptEnableDisable,
+    ) -> Result<(), Error<E>> {
+        let reg_data = self.read_register(Register::INT_CTRL).await?;
+        let new_reg_data = (reg_data & !0x80) | ((enable as u8) << 7);
         self.write_register(Register::INT_CTRL, new_reg_data).await
     }
 
-    /// Configure interrupt settings
     pub async fn configure_interrupt(
         &mut self,
         latch: InterruptLatch,
@@ -389,13 +418,13 @@ where
         drive: InterruptDrive,
         map: InterruptMap,
     ) -> Result<(), Error<E>> {
-        self.read_register(Register::INT_CTRL).await?;
-        let mut reg_data: u8 = 0;
-        reg_data = ((reg_data & (0x1)) | (latch as u8 & 0x1))
-            | ((reg_data & (0x2)) | ((polarity as u8) << 0x1) & 0x2)
-            | ((reg_data & (0x4)) | ((drive as u8) << 0x2) & 0x4)
-            | ((reg_data & (0x8)) | ((map as u8) << 0x3) & 0x8);
-        self.write_register(Register::INT_CTRL, reg_data).await
+        let reg_data = self.read_register(Register::INT_CTRL).await?;
+        let new_reg_data = (reg_data & !0x0F)
+            | (latch as u8 & 0x01)
+            | ((polarity as u8 & 0x01) << 1)
+            | ((drive as u8 & 0x01) << 2)
+            | ((map as u8 & 0x01) << 3);
+        self.write_register(Register::INT_CTRL, new_reg_data).await
     }
 
     /// Read the interrupt status
@@ -405,7 +434,11 @@ where
     }
 
     /// Set the I2C watchdog timer
-    pub async fn set_i2c_watchdog(&mut self, enable: bool, long_timeout: bool) -> Result<(), Error<E>> {
+    pub async fn set_i2c_watchdog(
+        &mut self,
+        enable: bool,
+        long_timeout: bool,
+    ) -> Result<(), Error<E>> {
         let reg_data = (enable as u8) | ((long_timeout as u8) << 1);
         self.write_register(Register::I2C_WDT_SET, reg_data).await
     }

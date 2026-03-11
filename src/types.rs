@@ -27,7 +27,9 @@ pub enum PowerMode {
     /// Forced mode fast
     ForcedFast = 0x04,
     FluxGuideReset = 0x05,
+    FluxGuideResetFast = 0x06,
     BitReset = 0x07,
+    BrFast = 0x08,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -153,6 +155,8 @@ pub struct Sensor3DData {
     pub y: i32,
     /// Z-axis value
     pub z: i32,
+    /// Temperature value
+    pub temperature: i32,
 }
 
 /// Scaled 3D sensor data
@@ -164,6 +168,8 @@ pub struct Sensor3DDataScaled {
     pub y: f32,
     /// Z-axis scaled value
     pub z: f32,
+    /// Temperature scaled value
+    pub temperature: f32,
 }
 
 /// Scaled 3D sensor data
